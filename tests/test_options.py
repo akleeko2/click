@@ -1199,6 +1199,99 @@ def test_missing_envvar_sequence(runner, envvar, expected):
     assert f"Error: Missing option {expected}." in result.output
 
 
+@pytest.mark.parametrize("envvar", [None, [], ""])
+def test_missing_envvar_auto_prefix(runner, envvar):
+    @click.command(context_settings={"auto_envvar_prefix": "MYAPP"})
+    @click.option("--port", type=int, envvar=envvar, required=True, show_envvar=True)
+    def cli(port):
+        click.echo(port)
+
+    result = runner.invoke(cli, [])
+    assert result.exit_code == 2
+    assert "Error: Missing option '--port' (env var: 'MYAPP_PORT')." in result.output
+
+
+def test_error_hint_envvar_auto_prefix_interactions(runner):
+    # Disabled allow_from_autoenv hides auto envvar in error hints.
+    @click.command(context_settings={"auto_envvar_prefix": "MYAPP"})
+    @click.option(
+        "--port",
+        type=int,
+        required=True,
+        show_envvar=True,
+        allow_from_autoenv=False,
+    )
+    def cli_disabled(port):
+        pass
+
+    result = runner.invoke(cli_disabled, [])
+    assert result.exit_code == 2
+    assert "Error: Missing option '--port'." in result.output
+    assert "env var:" not in result.output
+
+    # Explicit envvar takes precedence over auto_envvar_prefix.
+    @click.command(context_settings={"auto_envvar_prefix": "MYAPP"})
+    @click.option(
+        "--port", type=int, envvar="CUSTOM_PORT", required=True, show_envvar=True
+    )
+    def cli_explicit(port):
+        pass
+
+    result = runner.invoke(cli_explicit, [])
+    assert result.exit_code == 2
+    assert "Error: Missing option '--port' (env var: 'CUSTOM_PORT')." in result.output
+
+    # show_envvar=False omits envvar hint even with auto_envvar_prefix.
+    @click.command(context_settings={"auto_envvar_prefix": "MYAPP"})
+    @click.option("--port", type=int, required=True, show_envvar=False)
+    def cli_hidden(port):
+        pass
+
+    result = runner.invoke(cli_hidden, [])
+    assert result.exit_code == 2
+    assert "Error: Missing option '--port'." in result.output
+
+    # Nested group command derives prefix matching help text.
+    @click.group()
+    def grp():
+        pass
+
+    @grp.command()
+    @click.option("--baz", required=True, show_envvar=True)
+    def foo_bar(baz):
+        pass
+
+    result = runner.invoke(grp, ["foo-bar"], auto_envvar_prefix="TEST")
+    assert result.exit_code == 2
+    assert (
+        "Error: Missing option '--baz' (env var: 'TEST_FOO_BAR_BAZ')." in result.output
+    )
+
+    # BadParameter from CLI or envvar includes auto-derived envvar hint.
+    @click.command(context_settings={"auto_envvar_prefix": "MYAPP"})
+    @click.option("--port", type=int, required=True, show_envvar=True)
+    def cli_bad(port):
+        pass
+
+    result = runner.invoke(cli_bad, ["--port", "abc"])
+    assert result.exit_code == 2
+    assert (
+        "Error: Invalid value for '--port' (env var: 'MYAPP_PORT'): "
+        "'abc' is not a valid integer." in result.output
+    )
+
+    result = runner.invoke(cli_bad, [], env={"MYAPP_PORT": "abc"})
+    assert result.exit_code == 2
+    assert (
+        "Error: Invalid value for '--port' (env var: 'MYAPP_PORT'): "
+        "'abc' is not a valid integer." in result.output
+    )
+
+    # get_error_hint(None) remains safe when show_envvar=True without envvar.
+    option = click.Option(["--port"], show_envvar=True)
+    assert option.get_error_hint(None) == "'--port'"
+
+
 def test_case_insensitive_choice(runner):
     @click.command()
     @click.option("--foo", type=click.Choice(["Orange", "Apple"], case_sensitive=False))

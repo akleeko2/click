@@ -3084,6 +3084,10 @@ class Option(Parameter):
     :param hidden: hide this option from help outputs.
     :param attrs: Other command arguments described in :class:`Parameter`.
 
+    .. versionchanged:: 8.6.0
+        ``show_envvar=True`` includes auto-derived environment variable names
+        from :attr:`Context.auto_envvar_prefix` in :meth:`get_error_hint`.
+
     .. versionchanged:: 8.4.0
         Non-basic ``flag_value`` types (not ``str``, ``int``, ``float``, or
         ``bool``) are passed through unchanged instead of being stringified.
@@ -3401,10 +3405,34 @@ class Option(Parameter):
             value = value()
         return value
 
+    def _get_auto_envvar(self, ctx: Context | None) -> str | None:
+        """Return the auto-derived environment variable name, if enabled."""
+        if (
+            self.allow_from_autoenv
+            and ctx is not None
+            and ctx.auto_envvar_prefix is not None
+            and self.name
+        ):
+            return f"{ctx.auto_envvar_prefix}_{self.name.upper()}"
+
+        return None
+
+    def _get_envvars(self, ctx: Context | None) -> tuple[str, ...]:
+        """Return configured or auto-derived environment variable names."""
+        if self.envvar:
+            if isinstance(self.envvar, str):
+                return (self.envvar,)
+
+            return tuple(str(d) for d in self.envvar)
+
+        if (envvar := self._get_auto_envvar(ctx)) is not None:
+            return (envvar,)
+
+        return ()
+
     def get_error_hint(self, ctx: Context | None) -> str:
         result = super().get_error_hint(ctx)
-        if self.show_envvar and self.envvar:
-            envvars = [self.envvar] if isinstance(self.envvar, str) else self.envvar
+        if self.show_envvar and (envvars := self._get_envvars(ctx)):
             # An environment variable is allowed to feature a space or a comma on all
             # platforms, hence the quotes around each.
             var_str = ", ".join(f"'{var}'" for var in envvars)
@@ -3599,21 +3627,8 @@ class Option(Parameter):
     def get_help_extra(self, ctx: Context) -> types.OptionHelpExtra:
         extra: types.OptionHelpExtra = {}
 
-        if self.show_envvar:
-            envvar = self.envvar
-
-            if not envvar and (
-                self.allow_from_autoenv
-                and ctx.auto_envvar_prefix is not None
-                and self.name
-            ):
-                envvar = f"{ctx.auto_envvar_prefix}_{self.name.upper()}"
-
-            if envvar:
-                if isinstance(envvar, str):
-                    extra["envvars"] = (envvar,)
-                else:
-                    extra["envvars"] = tuple(str(d) for d in envvar)
+        if self.show_envvar and (envvars := self._get_envvars(ctx)):
+            extra["envvars"] = envvars
 
         # Temporarily enable resilient parsing to avoid type casting
         # failing for the default. Might be possible to extend this to
@@ -3743,8 +3758,7 @@ class Option(Parameter):
         if rv is not None:
             return rv
 
-        if self.allow_from_autoenv and ctx.auto_envvar_prefix is not None and self.name:
-            envvar = f"{ctx.auto_envvar_prefix}_{self.name.upper()}"
+        if (envvar := self._get_auto_envvar(ctx)) is not None:
             rv = os.environ.get(envvar)
 
             if rv:
